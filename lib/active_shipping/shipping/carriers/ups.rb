@@ -216,6 +216,10 @@ module ActiveMerchant
             # not implemented:  * Shipment/ShipmentServiceOptions element
             #                   * Shipment/RateInformation element
             
+            shipment << XmlNode.new("RateInformation") do |rate_info_node|
+              rate_info_node << XmlNode.new("NegotiatedRatesIndicator")
+            end
+            
           end
           
         end
@@ -280,7 +284,9 @@ module ActiveMerchant
                                 :total_price => rated_shipment.get_text('TotalCharges/MonetaryValue').to_s.to_f,
                                 :currency => rated_shipment.get_text('TotalCharges/CurrencyCode').to_s,
                                 :service_code => service_code,
-                                :packages => packages)
+                                :packages => packages,
+                                :negotiated_rate => rated_shipment.get_text('NegotiatedRates/NetSummaryCharges/GrandTotal/MonetaryValue').to_s.to_f)
+
           end
         end
         RateResponse.new(success, message, Hash.from_xml(response).values.first, :rates => rate_estimates, :xml => response, :request => last_request)

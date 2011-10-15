@@ -2,16 +2,17 @@ module ActiveMerchant #:nodoc:
   module Shipping #:nodoc:
   
     class RateEstimate
-      attr_reader :origin         # Location objects
+      attr_reader :origin           # Location objects
       attr_reader :destination  
-      attr_reader :package_rates  # array of hashes in the form of {:package => <Package>, :rate => 500}
-      attr_reader :carrier        # Carrier.name ('USPS', 'FedEx', etc.)
-      attr_reader :service_name   # name of service ("First Class Ground", etc.)
+      attr_reader :package_rates    # array of hashes in the form of {:package => <Package>, :rate => 500}
+      attr_reader :carrier          # Carrier.name ('USPS', 'FedEx', etc.)
+      attr_reader :service_name     # name of service ("First Class Ground", etc.)
       attr_reader :service_code
-      attr_reader :currency       # 'USD', 'CAD', etc.
-                                  # http://en.wikipedia.org/wiki/ISO_4217
-      attr_reader :delivery_date  # Usually only available for express shipments
-      attr_reader :delivery_range # Min and max delivery estimate in days
+      attr_reader :currency         # 'USD', 'CAD', etc.
+                                    # http://en.wikipedia.org/wiki/ISO_4217
+      attr_reader :delivery_date    # Usually only available for express shipments
+      attr_reader :delivery_range   # Min and max delivery estimate in days
+      attr_reader :negotiated_rate  # Account based discount
         
       def initialize(origin, destination, carrier, service_name, options={})
         @origin, @destination, @carrier, @service_name = origin, destination, carrier, service_name
