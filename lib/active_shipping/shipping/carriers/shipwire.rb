@@ -82,6 +82,7 @@ module ActiveMerchant
           xml.tag! 'Address1', destination.address1
           xml.tag! 'Address2', destination.address2 unless destination.address2.blank?
           xml.tag! 'Address3', destination.address3 unless destination.address3.blank?
+          xml.tag! 'Company', destination.company unless destination.company.blank?
           xml.tag! 'City', destination.city
           xml.tag! 'State', destination.state unless destination.state.blank?
           xml.tag! 'Country', destination.country_code
@@ -172,17 +173,6 @@ module ActiveMerchant
         if element = parent.elements[name]
           element.attributes[attribute]
         end
-      end
-
-      def timestamp_from_business_day(days)
-        return unless days
-        date = DateTime.now
-        days.times do
-          begin
-            date = date + 1
-          end until ![0,6].include?(date.wday)
-        end
-        date
       end
     end
   end

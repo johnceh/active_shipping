@@ -1,6 +1,7 @@
 # FedEx module by Jimmy Baker
 # http://github.com/jimmyebaker
 
+require 'date'
 module ActiveMerchant
   module Shipping
     
@@ -85,11 +86,47 @@ module ActiveMerchant
         'express_mps_master' => 'EXPRESS_MPS_MASTER'
       }
 
+
+      TransitTimes = ["UNKNOWN","ONE_DAY","TWO_DAYS","THREE_DAYS","FOUR_DAYS","FIVE_DAYS","SIX_DAYS","SEVEN_DAYS","EIGHT_DAYS","NINE_DAYS","TEN_DAYS","ELEVEN_DAYS","TWELVE_DAYS","THIRTEEN_DAYS","FOURTEEN_DAYS","FIFTEEN_DAYS","SIXTEEN_DAYS","SEVENTEEN_DAYS","EIGHTEEN_DAYS"]
+
+      # FedEx tracking codes as described in the FedEx Tracking Service WSDL Guide
+      # All delays also have been marked as exceptions
+      TRACKING_STATUS_CODES = HashWithIndifferentAccess.new({
+        'AA' => :at_airport,
+        'AD' => :at_delivery,
+        'AF' => :at_fedex_facility,
+        'AR' => :at_fedex_facility,
+        'AP' => :at_pickup,
+        'CA' => :canceled,
+        'CH' => :location_changed,
+        'DE' => :exception,
+        'DL' => :delivered,
+        'DP' => :departed_fedex_location,
+        'DR' => :vehicle_furnished_not_used,
+        'DS' => :vehicle_dispatched,
+        'DY' => :exception,
+        'EA' => :exception,
+        'ED' => :enroute_to_delivery,
+        'EO' => :enroute_to_origin_airport,
+        'EP' => :enroute_to_pickup,
+        'FD' => :at_fedex_destination,
+        'HL' => :held_at_location,
+        'IT' => :in_transit,
+        'LO' => :left_origin,
+        'OC' => :order_created,
+        'OD' => :out_for_delivery,
+        'PF' => :plane_in_flight,
+        'PL' => :plane_landed,
+        'PU' => :picked_up,
+        'RS' => :return_to_shipper,
+        'SE' => :exception,
+        'SF' => :at_sort_facility,
+        'SP' => :split_status,
+        'TR' => :transfer
+      })
+
       def self.service_name_for_code(service_code)
-        ServiceTypes[service_code] || begin
-          name = service_code.downcase.split('_').collect{|word| word.capitalize }.join(' ')
-          "FedEx #{name.sub(/Fedex /, '')}"
-        end
+        ServiceTypes[service_code] || "FedEx #{service_code.titleize.sub(/Fedex /, '')}"
       end
       
       def requirements
@@ -103,7 +140,7 @@ module ActiveMerchant
         rate_request = build_rate_request(origin, destination, packages, options)
         
         response = commit(save_request(rate_request), (options[:test] || false)).gsub(/<(\/)?.*?\:(.*?)>/, '<\1\2>')
-        
+
         parse_rate_response(origin, destination, packages, response, options)
       end
       
@@ -114,7 +151,7 @@ module ActiveMerchant
         response = commit(save_request(tracking_request), (options[:test] || false)).gsub(/<(\/)?.*?\:(.*?)>/, '<\1\2>')
         parse_tracking_response(response, options)
       end
-      
+
       protected
       def build_rate_request(origin, destination, packages, options={})
         imperial = ['US','LR','MM'].include?(origin.country_code(:alpha2))
@@ -136,7 +173,7 @@ module ActiveMerchant
           root_node << XmlNode.new('VariableOptions', 'SATURDAY_DELIVERY')
           
           root_node << XmlNode.new('RequestedShipment') do |rs|
-            rs << XmlNode.new('ShipTimestamp', Time.now)
+            rs << XmlNode.new('ShipTimestamp', ship_timestamp(options[:turn_around_time]))
             rs << XmlNode.new('DropoffType', options[:dropoff_type] || 'REGULAR_PICKUP')
             rs << XmlNode.new('PackagingType', options[:packaging_type] || 'YOUR_PACKAGING')
             
@@ -239,15 +276,22 @@ module ActiveMerchant
           is_saturday_delivery = rated_shipment.get_text('AppliedOptions').to_s == 'SATURDAY_DELIVERY'
           service_type = is_saturday_delivery ? "#{service_code}_SATURDAY_DELIVERY" : service_code
           
-          currency = handle_uk_currency(rated_shipment.get_text('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Currency').to_s)
+          transit_time = rated_shipment.get_text('TransitTime').to_s if service_code == "FEDEX_GROUND"
+          max_transit_time = rated_shipment.get_text('MaximumTransitTime').to_s if service_code == "FEDEX_GROUND"
+
+          delivery_timestamp = rated_shipment.get_text('DeliveryTimestamp').to_s
+
+          delivery_range = delivery_range_from(transit_time, max_transit_time, delivery_timestamp, options)
+
+          currency = handle_incorrect_currency_codes(rated_shipment.get_text('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Currency').to_s)
           rate_estimates << RateEstimate.new(origin, destination, @@name,
                               self.class.service_name_for_code(service_type),
                               :service_code => service_code,
                               :total_price => rated_shipment.get_text('RatedShipmentDetails/ShipmentRateDetail/TotalNetCharge/Amount').to_s.to_f,
                               :currency => currency,
                               :packages => packages,
-                              :delivery_range => [rated_shipment.get_text('DeliveryTimestamp').to_s] * 2)
-	    end
+                              :delivery_range => delivery_range)
+        end
 		
         if rate_estimates.empty?
           success = false
@@ -256,7 +300,35 @@ module ActiveMerchant
 
         RateResponse.new(success, message, Hash.from_xml(response), :rates => rate_estimates, :xml => response, :request => last_request, :log_xml => options[:log_xml])
       end
-      
+
+      def delivery_range_from(transit_time, max_transit_time, delivery_timestamp, options)
+        delivery_range = [delivery_timestamp, delivery_timestamp]
+        
+        #if there's no delivery timestamp but we do have a transit time, use it
+        if delivery_timestamp.blank? && transit_time.present?
+          transit_range  = parse_transit_times([transit_time,max_transit_time.presence || transit_time])
+          delivery_range = transit_range.map{|days| business_days_from(ship_date(options[:turn_around_time]), days)}
+        end
+
+        delivery_range
+      end
+
+      def business_days_from(date, days)
+        future_date = date
+        count       = 0
+
+        while count < days
+          future_date += 1.day
+          count += 1 if business_day?(future_date)
+        end
+
+        future_date
+      end
+
+      def business_day?(date)
+        (1..5).include?(date.wday)
+      end
+
       def parse_tracking_response(response, options)
         xml = REXML::Document.new(response)
         root_node = xml.elements['TrackReply']
@@ -265,13 +337,32 @@ module ActiveMerchant
         message = response_message(xml)
         
         if success
-          tracking_number, origin, destination = nil
+          tracking_number, origin, destination, status, status_code, status_description = nil
           shipment_events = []
-          
+
           tracking_details = root_node.elements['TrackDetails']
           tracking_number = tracking_details.get_text('TrackingNumber').to_s
           
+          status_code = tracking_details.get_text('StatusCode').to_s
+          status_description = tracking_details.get_text('StatusDescription').to_s
+          status = TRACKING_STATUS_CODES[status_code]
+
+          origin_node = tracking_details.elements['OriginLocationAddress']
+        
+          if origin_node
+            origin = Location.new(
+                  :country =>     origin_node.get_text('CountryCode').to_s,
+                  :province =>    origin_node.get_text('StateOrProvinceCode').to_s,
+                  :city =>        origin_node.get_text('City').to_s
+            )
+          end
+
           destination_node = tracking_details.elements['DestinationAddress']
+
+          if destination_node.nil?
+            destination_node = tracking_details.elements['ActualDeliveryAddress']
+          end
+
           destination = Location.new(
                 :country =>     destination_node.get_text('CountryCode').to_s,
                 :province =>    destination_node.get_text('StateOrProvinceCode').to_s,
@@ -297,17 +388,33 @@ module ActiveMerchant
             shipment_events << ShipmentEvent.new(description, zoneless_time, location)
           end
           shipment_events = shipment_events.sort_by(&:time)
+
         end
         
         TrackingResponse.new(success, message, Hash.from_xml(response),
+          :carrier => @@name,
           :xml => response,
           :request => last_request,
+          :status => status,
+          :status_code => status_code,
+          :status_description => status_description,
           :shipment_events => shipment_events,
+          :origin => origin,
           :destination => destination,
           :tracking_number => tracking_number
         )
       end
-            
+
+      def ship_timestamp(delay_in_hours)
+        delay_in_hours ||= 0
+        Time.now + delay_in_hours.hours
+      end
+
+      def ship_date(delay_in_hours)
+        delay_in_hours ||= 0
+        (Time.now + delay_in_hours.hours).to_date
+      end
+
       def response_status_node(document)
         document.elements['/*/Notifications/']
       end
@@ -318,15 +425,28 @@ module ActiveMerchant
       
       def response_message(document)
         response_node = response_status_node(document)
-        "#{response_status_node(document).get_text('Severity').to_s} - #{response_node.get_text('Code').to_s}: #{response_node.get_text('Message').to_s}"
+        "#{response_status_node(document).get_text('Severity')} - #{response_node.get_text('Code')}: #{response_node.get_text('Message')}"
       end
       
       def commit(request, test = false)
         ssl_post(test ? TEST_URL : LIVE_URL, request.gsub("\n",''))        
       end
       
-      def handle_uk_currency(currency)
-        currency =~ /UKL/i ? 'GBP' : currency
+      def handle_incorrect_currency_codes(currency)
+        case currency
+        when /UKL/i then 'GBP'
+        when /SID/i then 'SGD'
+        else currency
+        end
+      end
+
+      def parse_transit_times(times)
+        results = []
+        times.each do |day_count|
+          days = TransitTimes.index(day_count.to_s.chomp)
+          results << days.to_i
+        end
+        results
       end
     end
   end

@@ -107,7 +107,12 @@ module ActiveMerchant #:nodoc:
           :company_name => company_name
         }
       end
-      
+
+      def to_xml(options={})
+        options[:root] ||= "location"
+        to_hash.to_xml(options)
+      end
+
       def to_s
         prettyprint.gsub(/\n/, ' ')
       end
@@ -126,6 +131,18 @@ module ActiveMerchant #:nodoc:
         string << "\nFax: #{@fax}" unless @fax.blank?
         string
       end
+
+      # Returns the postal code as a properly formatted Zip+4 code, e.g. "77095-2233"
+      def zip_plus_4
+        if /(\d{5})(\d{4})/ =~ @postal_code
+          return "#{$1}-#{$2}"
+        elsif /\d{5}-\d{4}/ =~ @postal_code
+          return @postal_code
+        else
+          nil
+        end
+      end
+
     end
       
   end
